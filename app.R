@@ -1,3 +1,4 @@
+#options(shiny.reactlog = TRUE)
 # Load packages ----
 library(shiny)
 library(tidyverse)
@@ -6,12 +7,13 @@ regExInput = function(id, label = "Replacement Step"){
   ns = NS(id)
   
   tagList(
+    h5(label),
     selectInput(ns("class_name"), "New value for class:", c("RegEx"), "RegEx"),
     conditionalPanel(
       condition = "input.class_name == 'RegEx'",
       ns = ns,
       splitLayout(
-        textInput(ns("regex_in"), "RegEx In", value = "^\\d*\\.? (.*)$"),
+        textInput(ns("regex_in"), "RegEx In", value = "^(.*)$"),#"^\\d*\\.? (.*)$"),
         textInput(ns("regex_out"), "RegEx Out", value = "\\1"))),
     conditionalPanel( # it's cluttered to have this element hear, but I wasn't sure how to put one element of module in different location. maybe have this as some kind of popup
       condition = "input.class_name != 'RegEx'",
@@ -21,9 +23,11 @@ regExInput = function(id, label = "Replacement Step"){
 }
 
 regEx = function(input, output, session, values, var = "new"){
+  rv = reactiveValues()
   observe({
     # gives choices of the new value for class as being defined directly by a RegEx
     # or as a value from the chosen column 
+    # regex_vec()
     updateSelectInput(session, "class_name", choices = c("RegEx",values()[[var]]))
   })
   observe({
@@ -32,6 +36,7 @@ regEx = function(input, output, session, values, var = "new"){
   })
   regex_in = reactive({
     # defines RegEx selecting values to be replaced
+    req(input$class_name)
     if(input$class_name == 'RegEx'){
       return(input$regex_in)
     }
@@ -49,12 +54,15 @@ regEx = function(input, output, session, values, var = "new"){
   })
   regex_vec = reactive({
     # performs validation on the regex components (otherwise slight asynchrony will cause app to crash) and returns vector of regex arguments for replace
+    rv$values = values()
     validate(
       need(try(str_count(regex_in(), '\\(')==str_count(regex_in(), '\\)')), "Unmatched parenthesis; please match parenthesis to generate valid RegEx"),
       #This needs to be improved to sanitize input and avoid injection
       need(str_count(regex_in(), '\\(')>=str_count(regex_out(), '\\\\\\d'), "more group references than groups to be referenced"))
     c(regex_in(),regex_out())
   })
+  updateSelectInput(session, "class_name", choices = c("RegEx",isolate(rv$values)[[var]]))
+  # updateSelectInput(session, "class_name", choices = c("RegEx",isolate(values()[[var]])))
   return(regex_vec)
 }
 
@@ -65,7 +73,8 @@ ui = fluidPage(
     sidebarPanel(
       fileInput("data_frame", "Data Frame"),
       selectInput("var", "Variable/Column:", character(0)),
-      regExInput("initial_RegEx", "Initial replacement step:"),
+      actionButton("add", "Add UI"),
+      # regExInput("initial_RegEx", "Initial replacement step:"),
       textOutput("test"),
       tableOutput("classes_tbl")
     ),
@@ -80,6 +89,8 @@ ui = fluidPage(
 
 # Server logic
 server = function(input, output, session) {
+  regex_values = reactiveValues()
+  
   df = reactive({
     # loads a data frame from and rda selected by the user
     #req(input$data_frame$datapath)
@@ -102,11 +113,37 @@ server = function(input, output, session) {
     df[order(df[["original"]]),] %>% #should be changed so order method works better for numbers
       mutate(new = original)
   })
-  regex_initial = callModule(regEx, "initial_RegEx", values = values)
+  observeEvent({
+    # run once at start
+    if(length(reactiveValuesToList(regex_values)) < 1){
+      return(T)
+    }
+    # run again when most recently created input is no longer zero
+    req(regex_values[[as.character(length(reactiveValuesToList(regex_values)))]]())
+    if(!(identical(regex_values[[as.character(length(reactiveValuesToList(regex_values)))]](), c("^(.*)$", "\\1")))){
+      regex_values[[as.character(length(reactiveValuesToList(regex_values)))]]()
+    }
+    }, {
+      n = as.character(length(reactiveValuesToList(regex_values)) + 1)
+      insertUI(
+        selector = "#test",
+        where = "beforeBegin",
+        ui = regExInput(n, paste0("Replacement step ", n))
+      )
+      regex_values[[n]] = callModule(regEx, n, values = values)
+      # cat(length(reactiveValuesToList(regex_values)))
+  })
+  # for(i in seq_along(isolate(regex_values))){
+  #   regex_values[[as.character(i)]] = callModule()
+  # }
   classes = reactive({
     # performs the replacement to create the new value (in "new" column) and counts how many instances are in each class (have a given new value)
-      values = values()
-      c_names = mutate(values, new = str_replace(original, regex_initial()[1], regex_initial()[2]))
+      c_names = values()
+      # i = 1
+      for(i in 1:(length(reactiveValuesToList(regex_values)))){
+        req(regex_values[[as.character(i)]]())
+        c_names = mutate(c_names, new = str_replace(new, regex_values[[as.character(i)]]()[1], regex_values[[as.character(i)]]()[2]))
+      }
       table = c_names %>%
         group_by(new) %>%
         summarise(values_count = n())
@@ -134,7 +171,8 @@ server = function(input, output, session) {
       unique()
   })
   output$test = renderText({
-    
+    length(reactiveValuesToList(regex_values))
+    #toString(regex_values[[as.character(length(reactiveValuesToList(regex_values)))]]())
   })
 }
 
